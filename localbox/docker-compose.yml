@@ -5,15 +5,22 @@ services:
     container_name: localbox
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8239:8080"
     environment:
+      # Store analysis + transcode cache inside the library (<music>/.localbox)
+      # so the fingerprints travel with the music. Requires a read-write music
+      # mount (below). Set to 0 to use the /data volume instead (and switch the
+      # music mount back to :ro).
+      CACHE_IN_LIBRARY: "1"
       # Optional acoustic fingerprinting for untagged files.
       # Get a free key at https://acoustid.org/new-application
       ACOUSTID_KEY: ""
       # Comma-separated extensions to always transcode to mp3, e.g. ".flac,.wav"
       FORCE_TRANSCODE: ""
     volumes:
-      # Your music library, read-only. On Unraid this is /mnt/user/music.
-      - /mnt/user/music:/music:ro
-      # Analysis + transcode cache (persist so tracks only analyze once).
+      # Your music library. READ-WRITE because the cache lives in <music>/.localbox.
+      # If CACHE_IN_LIBRARY=0, change this to ":ro".
+      - /mnt/user/music:/music:rw
+      # Fallback cache (used only when CACHE_IN_LIBRARY=0, or if the library
+      # turns out to be read-only).
       - /mnt/user/appdata/localbox:/data

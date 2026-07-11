@@ -13,6 +13,13 @@
     <div class="searchbar">
       <input id="search" type="search" placeholder="Search your whole library…" autocomplete="off" />
     </div>
+    <div class="shufflebar">
+      <button id="sh-folder" class="shuf">🔀 Shuffle this folder</button>
+      <button id="sh-all" class="shuf">🔀 Shuffle everywhere</button>
+      <button id="sh-stars" class="shuf">⭐ Shuffle 5-star</button>
+      <button id="an-folder" class="shuf">🎛 Analyze this folder</button>
+    </div>
+    <div id="an-status" class="batch-status"></div>
   </header>
 
   <nav id="crumbs" class="crumbs"></nav>
@@ -56,7 +63,10 @@
       return li;
     }
 
+    let currentPath = "";
+
     async function loadDir(path) {
+      currentPath = path || "";
       history.replaceState({}, "", "#" + encodeURIComponent(path || ""));
       loadingEl.hidden = false;
       emptyEl.hidden = true;
@@ -121,6 +131,35 @@
       emptyEl.hidden = data.results.length > 0;
       if (!data.results.length) emptyEl.textContent = "No matches.";
     }
+
+    function shuffle(scope) {
+      let url = "/player?shuffle=" + scope;
+      if (scope === "folder" && currentPath) url += "&path=" + encodeURIComponent(currentPath);
+      location.href = url;
+    }
+    document.getElementById("sh-folder").onclick = () => shuffle("folder");
+    document.getElementById("sh-all").onclick = () => shuffle("all");
+    document.getElementById("sh-stars").onclick = () => shuffle("stars");
+
+    // Analyze the current folder (recursive) across cores, with live progress.
+    const anEl = document.getElementById("an-status");
+    let anTimer = null;
+    async function pollAnalyse() {
+      const s = await (await fetch("/api/analyse-status")).json();
+      if (s.total > 0) anEl.textContent = `🎛 analysing ${s.done} / ${s.total}${s.running ? "…" : " — done ✓"}`;
+      if (!s.running) { clearInterval(anTimer); anTimer = null; }
+    }
+    document.getElementById("an-folder").onclick = async () => {
+      anEl.textContent = "🎛 scanning folder…";
+      const url = "/api/analyse-folder" + (currentPath ? "?path=" + encodeURIComponent(currentPath) : "");
+      const s = await (await fetch(url, { method: "POST" })).json();
+      if (s.queued === 0) {
+        anEl.textContent = `✓ this folder is already analysed (${s.already_cached} tracks)`;
+        return;
+      }
+      anEl.textContent = `🎛 analysing ${s.queued} tracks across ${s.workers} cores…`;
+      if (!anTimer) anTimer = setInterval(pollAnalyse, 2000);
+    };
 
     const start = decodeURIComponent((location.hash || "").slice(1));
     loadDir(start);

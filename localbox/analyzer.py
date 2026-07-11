@@ -32,6 +32,8 @@ care to make those meaningful; everything else is best-effort but well-formed.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import librosa
 
@@ -82,16 +84,33 @@ def _rms_to_db(rms: float) -> float:
     return float(20.0 * np.log10(max(rms, 1e-6)))
 
 
-def analyze(path: str, sr: int = 22050) -> dict:
-    """Analyze `path` and return the analysis dict (no `info`; caller adds it)."""
+# Default analysis sample rate. Higher = more timbral/pitch detail and more CPU.
+_sr_env = os.environ.get("ANALYSIS_SR", "").strip()
+DEFAULT_SR = int(_sr_env) if _sr_env.isdigit() and int(_sr_env) > 0 else 44100
+
+
+def analyze(path: str, sr: int | None = None) -> dict:
+    """Analyze `path` and return (analysis dict, duration).
+
+    Uses HPSS (harmonic/percussive source separation) so beats are tracked from
+    the percussive component (crisp, less confused by sustained notes) while
+    pitch/chroma is read from the harmonic component (cleaner tonal content).
+    This costs an extra STFT pass — deliberately, for quality.
+    """
+    sr = sr or DEFAULT_SR
     y, sr = librosa.load(path, sr=sr, mono=True)
     duration = float(librosa.get_duration(y=y, sr=sr))
     if duration <= 0 or y.size == 0:
         raise ValueError("empty or unreadable audio")
 
     hop = 512
-    # --- beats & tempo -----------------------------------------------------
-    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop, units="frames")
+    # --- harmonic/percussive separation -----------------------------------
+    y_harm, y_perc = librosa.effects.hpss(y)
+
+    # --- beats & tempo (from the percussive component) ---------------------
+    tempo, beat_frames = librosa.beat.beat_track(
+        y=y_perc, sr=sr, hop_length=hop, units="frames", trim=False
+    )
     tempo = float(np.atleast_1d(tempo)[0])
     beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
     beat_times = _ensure_grid(beat_times, duration, tempo)
@@ -106,11 +125,11 @@ def analyze(path: str, sr: int = 22050) -> dict:
     tatum_times = _subdivide(beat_times, 2, duration)
     tatums = _intervals(tatum_times, duration, confidence=0.5)
 
-    # --- segments (onset-bounded, the perceptual units) --------------------
-    segments = _segments(y, sr, hop, duration)
+    # --- segments (onsets from percussive; chroma from harmonic) -----------
+    segments = _segments(y, y_harm, y_perc, sr, hop, duration)
 
-    # --- sections (large agglomerative regions) ----------------------------
-    sections = _sections(y, sr, hop, duration, tempo, time_signature)
+    # --- sections (large agglomerative regions, harmonic content) ----------
+    sections = _sections(y, y_harm, sr, hop, duration, tempo, time_signature)
 
     return {
         "sections": sections,
@@ -158,24 +177,26 @@ def _intervals(times: np.ndarray, duration: float, confidence: float):
     return out
 
 
-def _frame_features(y, sr, hop):
-    """Chroma (12), MFCC (12) and RMS on a common frame grid.
+def _frame_features(y_full, y_harm, sr, hop):
+    """Chroma (12, from the harmonic signal), MFCC (12) and RMS on a common grid.
 
     librosa features can disagree by a frame; trim everything to the shortest so
     boolean masks and vstack stay aligned.
     """
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop)          # 12 x T
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop, n_mfcc=12)        # 12 x T
-    rms = librosa.feature.rms(y=y, hop_length=hop)[0]                        # T
+    chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr, hop_length=hop)      # 12 x T
+    mfcc = librosa.feature.mfcc(y=y_full, sr=sr, hop_length=hop, n_mfcc=12)   # 12 x T
+    rms = librosa.feature.rms(y=y_full, hop_length=hop)[0]                    # T
     t = min(chroma.shape[1], mfcc.shape[1], rms.shape[0])
     chroma, mfcc, rms = chroma[:, :t], mfcc[:, :t], rms[:t]
     times = librosa.frames_to_time(np.arange(t), sr=sr, hop_length=hop)
     return chroma, mfcc, rms, times
 
 
-def _segments(y, sr, hop, duration):
-    """Onset-bounded segments with 12-bin chroma (pitches) and 12 MFCC (timbre)."""
-    onset_frames = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, backtrack=True)
+def _segments(y, y_harm, y_perc, sr, hop, duration):
+    """Onset-bounded segments with 12-bin chroma (pitches) and 12 MFCC (timbre).
+
+    Onsets are detected on the percussive component for sharper boundaries."""
+    onset_frames = librosa.onset.onset_detect(y=y_perc, sr=sr, hop_length=hop, backtrack=True)
     onset_times = librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop)
     bounds = np.concatenate([[0.0], onset_times, [duration]])
     bounds = np.unique(np.clip(bounds, 0, duration))
@@ -183,7 +204,7 @@ def _segments(y, sr, hop, duration):
     if bounds.size < 2:
         bounds = np.linspace(0, duration, max(2, int(duration / 0.25)))
 
-    chroma, mfcc, rms, times = _frame_features(y, sr, hop)
+    chroma, mfcc, rms, times = _frame_features(y, y_harm, sr, hop)
 
     segments = []
     for i in range(len(bounds) - 1):
@@ -219,8 +240,8 @@ def _segments(y, sr, hop, duration):
     return segments
 
 
-def _sections(y, sr, hop, duration, tempo, time_signature):
-    chroma, mfcc, rms, frame_times = _frame_features(y, sr, hop)
+def _sections(y, y_harm, sr, hop, duration, tempo, time_signature):
+    chroma, mfcc, rms, frame_times = _frame_features(y, y_harm, sr, hop)
     feat = np.vstack([librosa.util.normalize(chroma, axis=1),
                       librosa.util.normalize(mfcc, axis=1)])
 

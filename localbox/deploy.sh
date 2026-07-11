@@ -6,7 +6,8 @@
 #   1. Preflight: SSH reachable, docker present, music share exists.
 #   2. Ship this folder's source to the box (tar over SSH — no rsync needed).
 #   3. Build the image on the box.
-#   4. Recreate the container with the correct mounts (music read-only).
+#   4. Recreate the container with the correct mounts (music read-write so the
+#      analysis/fingerprint cache can live inside the library at .localbox).
 #   5. Health-check: container running + /healthy responding + library readable.
 #
 # Usage (note: in zsh, don't paste a trailing "# comment" — zsh passes it as an
@@ -28,9 +29,9 @@ HOST="${SSH_TARGET#*@}"
 
 IMAGE="${IMAGE:-localbox:latest}"
 CONTAINER="${CONTAINER:-localbox}"
-PORT="${PORT:-8085}"
+PORT="${PORT:-8239}"
 
-MUSIC_DIR="${MUSIC_DIR:-/mnt/user/music}"                    # on the Unraid box, read-only
+MUSIC_DIR="${MUSIC_DIR:-/mnt/user/music}"                    # library on the Unraid box
 DATA_DIR="${DATA_DIR:-/mnt/user/appdata/localbox}"           # analysis + transcode cache
 SRC_DIR="${SRC_DIR:-~/source/dale/Infinite/localbox}"        # where source is shipped & built
 
@@ -108,6 +109,17 @@ ok "image built"
 # ----------------------------------------------------------------------------
 step "Recreating container $CONTAINER"
 # ----------------------------------------------------------------------------
+# CACHE_IN_LIBRARY=1 stores analysis/transcodes in <music>/.localbox, so the
+# music share is mounted READ-WRITE. Set CACHE_IN_LIBRARY=0 to keep it in /data
+# and mount music read-only instead.
+CACHE_IN_LIBRARY="${CACHE_IN_LIBRARY:-1}"
+if [ "$CACHE_IN_LIBRARY" = "1" ]; then
+  MUSIC_MOUNT="$MUSIC_DIR:/music:rw"
+  warn "cache stored inside the library (.localbox) — mounting $MUSIC_DIR read-WRITE"
+else
+  MUSIC_MOUNT="$MUSIC_DIR:/music:ro"
+fi
+
 remote "docker rm -f '$CONTAINER' >/dev/null 2>&1 || true"
 remote "docker run -d \
   --name '$CONTAINER' \
@@ -115,7 +127,8 @@ remote "docker run -d \
   -p '${PORT}:8080' \
   -e ACOUSTID_KEY='$ACOUSTID_KEY' \
   -e FORCE_TRANSCODE='$FORCE_TRANSCODE' \
-  -v '$MUSIC_DIR:/music:ro' \
+  -e CACHE_IN_LIBRARY='$CACHE_IN_LIBRARY' \
+  -v '$MUSIC_MOUNT' \
   -v '$DATA_DIR:/data' \
   '$IMAGE'" >/dev/null || die "docker run failed"
 ok "container started"

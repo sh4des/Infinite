@@ -24,7 +24,7 @@
     then it is cached.
   </Overview>
   <Category>MediaApp:Music</Category>
-  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <WebUI>http://[IP]:[PORT:8239]/</WebUI>
   <Icon>https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/267e.png</Icon>
   <ExtraParams/>
   <PostArgs/>
@@ -34,19 +34,24 @@
   <DonateLink/>
   <Description>
     Infinite Jukebox for your local music library. Local analysis, no external
-    services. Point /music at your library (read-only) and /data at appdata.
+    services. Point /music at your library (read-write, for the .localbox cache)
+    and /data at appdata (fallback cache).
   </Description>
 
-  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp"
-          Description="Port for the web interface" Type="Port" Display="always"
-          Required="true" Mask="false">8080</Config>
+  <Config Name="WebUI Port" Target="8080" Default="8239" Mode="tcp"
+          Description="Host port for the web interface (maps to container port 8080)"
+          Type="Port" Display="always" Required="true" Mask="false">8239</Config>
 
   <Config Name="Music Library" Target="/music" Default="/mnt/user/music"
-          Mode="ro:shared" Description="Your music library (mounted read-only)"
+          Mode="rw:shared" Description="Your music library. Mounted READ-WRITE because the analysis/fingerprint cache is stored inside it at .localbox (so it travels with the music). Only the .localbox folder is written."
           Type="Path" Display="always" Required="true" Mask="false">/mnt/user/music</Config>
 
-  <Config Name="Cache / Data" Target="/data" Default="/mnt/user/appdata/localbox"
-          Mode="rw" Description="Analysis + transcode cache (persisted so each track only analyses once)"
+  <Config Name="Store cache in library" Target="CACHE_IN_LIBRARY" Default="1" Mode=""
+          Description="1 = keep analysis/transcodes inside the library at .localbox (needs the read-write mount above). 0 = keep them in the Cache/Data path below and treat the library as read-only."
+          Type="Variable" Display="always" Required="false" Mask="false">1</Config>
+
+  <Config Name="Cache / Data (fallback)" Target="/data" Default="/mnt/user/appdata/localbox"
+          Mode="rw" Description="Used only when 'Store cache in library' is 0 (or the library is read-only)."
           Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/localbox</Config>
 
   <Config Name="AcoustID Key" Target="ACOUSTID_KEY" Default="" Mode=""

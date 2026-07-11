@@ -38,6 +38,25 @@ header .sub { margin: 4px 0 18px; color: var(--dim); }
 }
 .searchbar input:focus { border-color: var(--accent); }
 
+.shufflebar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin: 16px auto 0;
+}
+.shuf {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.shuf:hover { border-color: var(--accent); color: var(--accent); }
+.batch-status { text-align: center; color: var(--accent2); font-size: 13px; margin-top: 10px; min-height: 18px; }
+
 .crumbs {
   max-width: 860px;
   margin: 18px auto 6px;
@@ -102,8 +121,25 @@ main { max-width: 860px; margin: 0 auto 60px; padding: 0 16px; }
 .nowplaying { padding: 24px 16px 6px; }
 .nowplaying .title { font-size: 24px; font-weight: 700; }
 .nowplaying .artist { color: var(--dim); }
+.nowplaying .queueinfo { color: var(--accent2); font-size: 13px; margin-top: 6px; }
 
-.stage { display: flex; justify-content: center; padding: 8px; }
+.stage { position: relative; display: flex; justify-content: center; padding: 8px; }
+.tapstart {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.tapstart span {
+  background: var(--accent);
+  color: #05202b;
+  font-weight: 700;
+  padding: 14px 26px;
+  border-radius: 999px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+}
 canvas {
   width: min(78vw, 78vh, 720px);
   height: min(78vw, 78vh, 720px);
@@ -135,4 +171,14 @@ button.primary {
   cursor: pointer;
 }
 button.primary:hover { filter: brightness(1.08); }
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 15px;
+  cursor: pointer;
+}
+button.secondary:hover { border-color: var(--accent); color: var(--accent); }
 .stats { color: var(--dim); font-size: 13px; }

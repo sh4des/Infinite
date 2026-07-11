@@ -84,10 +84,16 @@ def list_dir(music_dir: str, rel: str = "") -> dict:
 
 @lru_cache(maxsize=4096)
 def _index(music_dir: str) -> tuple:
-    """Full recursive index: id -> absolute path. Cached; call clear_index() to refresh."""
+    """Full recursive index: id -> absolute path. Cached; call clear_index() to refresh.
+
+    Hidden folders (notably the .localbox cache) are skipped so cached
+    transcodes never masquerade as library tracks."""
     mapping = {}
-    for dirpath, _dirs, filenames in os.walk(music_dir):
+    for dirpath, dirs, filenames in os.walk(music_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for fn in filenames:
+            if fn.startswith("."):
+                continue
             ext = os.path.splitext(fn)[1].lower()
             if ext in AUDIO_EXTS:
                 p = os.path.join(dirpath, fn)
@@ -161,6 +167,116 @@ def read_tags(path: str) -> dict:
     except Exception:
         pass
     return {"title": title, "artist": artist, "album": album, "duration": duration}
+
+
+def read_rating(path: str):
+    """Best-effort star rating (0-5) from tags, or None if not rated.
+
+    Handles the common encodings:
+      - ID3 POPM (Popularimeter), 0-255, Windows-Media/iTunes 5-star mapping
+      - Vorbis (FLAC/OGG): RATING 0-100, or FMPS_RATING 0.0-1.0
+      - MP4/M4A: 'rate' atom 0-100
+    """
+    try:
+        from mutagen import File as MutagenFile
+
+        raw = MutagenFile(path)
+        if raw is None:
+            return None
+        tags = raw.tags
+        if not tags:
+            return None
+
+        # ID3 POPM (key looks like "POPM:user@host" or "POPM:")
+        for key in getattr(tags, "keys", lambda: [])():
+            if str(key).upper().startswith("POPM"):
+                popm = tags[key]
+                val = getattr(popm, "rating", None)
+                if val is not None:
+                    return _popm_to_stars(int(val))
+
+        # Vorbis comments (FLAC / OGG) — tags behave like a dict of lists
+        def _vorbis(name):
+            try:
+                v = tags.get(name) or tags.get(name.lower()) or tags.get(name.upper())
+                if v:
+                    return str(v[0]) if isinstance(v, list) else str(v)
+            except Exception:
+                return None
+            return None
+
+        fmps = _vorbis("FMPS_RATING")
+        if fmps is not None:
+            try:
+                return int(round(float(fmps) * 5))
+            except ValueError:
+                pass
+        rating = _vorbis("RATING")
+        if rating is not None:
+            try:
+                r = float(rating)
+                return int(round(r / 20.0)) if r > 5 else int(round(r))
+            except ValueError:
+                pass
+
+        # MP4 / M4A rating atom (0-100)
+        try:
+            if "rate" in tags:
+                r = tags["rate"]
+                r = r[0] if isinstance(r, list) else r
+                return int(round(float(r) / 20.0))
+        except Exception:
+            pass
+    except Exception:
+        return None
+    return None
+
+
+def _popm_to_stars(v: int) -> int:
+    """Map an ID3 POPM 0-255 byte to 0-5 stars (WMP/iTunes convention)."""
+    if v <= 0:
+        return 0
+    if v <= 31:
+        return 1
+    if v <= 95:
+        return 2
+    if v <= 159:
+        return 3
+    if v <= 223:
+        return 4
+    return 5
+
+
+def list_scope(music_dir: str, scope: str, path: str = "") -> list[dict]:
+    """Enumerate tracks for a shuffle scope: 'folder' (recursive under path),
+    'all' (whole library), or 'stars' (rating == 5). Returns light dicts."""
+    if scope == "folder":
+        root = _safe_join(music_dir, path)
+        paths = []
+        for dirpath, dirs, filenames in os.walk(root):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for fn in filenames:
+                if fn.startswith("."):
+                    continue
+                if os.path.splitext(fn)[1].lower() in AUDIO_EXTS:
+                    paths.append(os.path.join(dirpath, fn))
+    else:
+        paths = [p for _tid, p in _index(music_dir)]
+
+    out = []
+    want_stars = scope == "stars"
+    for p in paths:
+        if want_stars and read_rating(p) != 5:
+            continue
+        name = os.path.basename(p)
+        meta = read_tags(p) if (scope != "all" or want_stars) else None
+        out.append({
+            "id": track_id(music_dir, p),
+            "title": (meta["title"] if meta and meta["title"] else os.path.splitext(name)[0]),
+            "artist": meta["artist"] if meta else "",
+            "path": os.path.relpath(p, music_dir),
+        })
+    return out
 
 
 def identify(path: str, acoustid_key: str | None) -> dict:

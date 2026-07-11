@@ -19,10 +19,19 @@ purpose-built local-library variant, not a fork of the Java app.
 
 - ✅ Browse and search your whole library (reads ID3 / Vorbis / MP4 tags).
 - ✅ Infinite-remix playback of **any** local file, generated on-device.
+- ✅ **Natural jumps** — splices only happen between beats at the same position
+  in the bar (downbeat→downbeat) with similar energy, and every jump is an
+  equal-power crossfade rather than a hard cut. A jump cooldown keeps it musical
+  instead of frantic.
+- ✅ **Autoplay** — a track starts as soon as it loads (with a one-tap fallback
+  if your browser blocks autoplay).
+- ✅ **Shuffle** three ways, each as a randomized queue with a **Next ⏭** button:
+  *this folder* (recursive), *everywhere*, and *5-star* (from your rating tags).
 - ✅ Handles mp3, m4a/aac, ogg/opus, wav directly; transcodes flac/wma/alac/etc.
   to mp3 on the fly (cached).
-- ✅ Analysis and transcodes are cached under `/data` — each track is only
-  analysed once (a few seconds of CPU the first time).
+- ✅ Analysis and transcodes are cached **inside your library** at
+  `<music>/.localbox` — the fingerprints travel with the music, and each track
+  is only analysed once (a few seconds of CPU the first time).
 - ➕ *Optional* acoustic fingerprinting (AcoustID/Chromaprint) to fill in
   title/artist for **untagged** files. See below.
 - ❌ It does **not** need or use Spotify/YouTube. Fingerprinting only identifies
@@ -34,17 +43,61 @@ purpose-built local-library variant, not a fork of the Java app.
 
 | Container path | Purpose | Unraid suggestion |
 |---|---|---|
-| `/music` | Your music library, **read-only** | `/mnt/user/music` |
-| `/data`  | Analysis + transcode cache (persist!) | `/mnt/user/appdata/localbox` |
-| `:8080`  | Web UI | host port of your choice |
+| `/music` | Your music library — **read-write** (only `.localbox` is written) | `/mnt/user/music` |
+| `/data`  | Fallback cache, used only if `CACHE_IN_LIBRARY=0` | `/mnt/user/appdata/localbox` |
+| `:8239`  | Web UI (host port; container listens on 8080) | `8239` |
+
+> **Why read-write?** By default the analysis/fingerprint cache is stored at
+> `<music>/.localbox` so it travels with your library. The app only ever writes
+> to that one hidden folder (which the browser hides from you). If you'd rather
+> keep your music mount read-only, set `CACHE_IN_LIBRARY=0` and it uses `/data`.
 
 Environment variables (all optional):
 
 | Var | Default | Meaning |
 |---|---|---|
+| `CACHE_IN_LIBRARY` | `1` | `1` = cache in `<music>/.localbox` (needs rw mount). `0` = cache in `/data` (mount `/music` read-only). |
+| `ANALYSIS_SR` | `44100` | Analysis sample rate. Higher = more pitch/timbre detail + more CPU. |
+| `ANALYSIS_WORKERS` | *(all cores)* | Number of parallel analysis worker processes. Blank = `os.cpu_count()`. |
 | `ACOUSTID_KEY` | *(empty)* | Enable AcoustID fingerprint fallback. Free key: https://acoustid.org/new-application |
 | `FORCE_TRANSCODE` | *(empty)* | Comma list of extensions to always transcode to mp3, e.g. `.flac,.wav` |
-| `PORT` | `8080` | Internal port |
+| `PORT` | `8080` | Container-internal port (the deploy script publishes host `8239` → this). |
+
+## Analysis quality & CPU
+
+The analyzer runs **HPSS** (harmonic/percussive source separation) on every
+track: beats are tracked from the *percussive* signal (crisp, not fooled by
+sustained chords) and pitch/chroma is read from the *harmonic* signal (cleaner
+tonal content). It analyses at 44.1 kHz by default. This is deliberately
+CPU-heavy for better remixes; each track is analysed once and cached.
+
+Analysis happens **on demand** — a track is analysed the first time you open it
+(if not already cached), then reused instantly forever after. Nothing analyses
+your library in the background.
+
+Analysis is **multicore** — a pool of `ANALYSIS_WORKERS` worker processes (all
+cores by default) runs librosa off the web server, so concurrent opens use
+separate cores and the UI stays responsive. If you'd rather warm a folder ahead
+of time, the **🎛 Analyze this folder** button on the home page analyses every
+not-yet-cached track under the folder you're viewing (recursive) across all
+cores, with live progress; or `curl -XPOST 'http://TOWER:8239/api/analyse-folder?path=Artist/Album'`.
+
+Tuning: lower `ANALYSIS_SR` (e.g. `22050`) or cap `ANALYSIS_WORKERS` if you want
+localbox to leave headroom for other Unraid workloads.
+
+## Shuffle & 5-star ratings
+
+The library page has three shuffle buttons. Each opens the player with a
+randomized queue you advance with **Next ⏭**:
+
+- **Shuffle this folder** — every track under the folder you're viewing (recursive).
+- **Shuffle everywhere** — your entire library.
+- **Shuffle 5-star** — only tracks your tags rate 5 stars.
+
+5-star detection is best-effort across the common rating encodings: ID3 `POPM`
+(the Windows Media / iTunes 0–255 → 5-star mapping), Vorbis `RATING` (0–100) and
+`FMPS_RATING` (0.0–1.0), and the MP4 `rate` atom. If a format stores ratings
+somewhere exotic, those tracks just won't be picked up.
 
 ---
 
@@ -60,7 +113,7 @@ You are building a **custom image**, so pick one of these two paths.
 3. In Compose Manager: **Add New Stack → localbox**, then paste/point it at the
    included `docker-compose.yml` (edit the `/mnt/user/music` path if yours
    differs). Compose Manager will `build` the image and start it.
-4. Open `http://<tower-ip>:8080/`.
+4. Open `http://<tower-ip>:8239/`.
 
 ### Option B — Build & push an image, then use the Unraid template
 
@@ -74,11 +127,11 @@ You are building a **custom image**, so pick one of these two paths.
    `/boot/config/plugins/dockerMan/templates-user/my-localbox.xml`.
 3. Edit its `<Repository>` line to `ghcr.io/YOURUSER/localbox:latest`.
 4. Unraid → **Docker → Add Container → Template: localbox**. Confirm the
-   `/music` (read-only) and `/data` paths and the port, then **Apply**.
+   `/music` (read-write) and `/data` paths and the port, then **Apply**.
 5. Open the WebUI from the Docker tab.
 
-> The template defaults to mapping `/mnt/user/music` → `/music` read-only and
-> `/mnt/user/appdata/localbox` → `/data`.
+> The template defaults to mapping `/mnt/user/music` → `/music` read-write (for
+> the `.localbox` cache) and `/mnt/user/appdata/localbox` → `/data` (fallback).
 
 ---
 
@@ -88,7 +141,7 @@ You are building a **custom image**, so pick one of these two paths.
 cd localbox
 # edit docker-compose.yml if your library isn't at /mnt/user/music
 docker compose up -d --build
-# → http://localhost:8080
+# → http://localhost:8239
 ```
 
 ---
@@ -102,12 +155,15 @@ docker compose up -d --build
    12-bin chroma vector (`pitches`) and 12 MFCC coefficients (`timbre`). Those
    two vectors are what make beats comparable.
 3. **`app.py`** (FastAPI) serves the browser UI, the analysis JSON (cached to
-   `/data/analysis`), and the audio (original, or a cached mp3 transcode with
-   HTTP range support).
+   `<music>/.localbox/analysis`), the audio (original, or a cached mp3 transcode
+   with HTTP range support), and the `/api/shuffle` queues.
 4. **`static/infinite.js`** builds a per-beat feature vector, finds "edges"
-   between similar beats (adaptive threshold, like the original), and schedules
-   beat-accurate playback through the Web Audio API, jumping along edges so it
-   never ends. `static/player.html` draws the circular beat/edge visualiser.
+   between similar beats — gated so a jump lands on the **same beat position in
+   the bar** with **similar loudness**, then ranked by a short forward-window
+   similarity — and schedules beat-accurate playback through the Web Audio API
+   with an **equal-power crossfade** at each splice and a jump cooldown, so it
+   loops forever and the jumps sound musical. `static/player.html` draws the
+   circular beat/edge visualiser and drives autoplay + the shuffle queue.
 
 ---
 

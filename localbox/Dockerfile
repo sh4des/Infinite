@@ -26,9 +26,14 @@ COPY static ./static
 
 ENV MUSIC_DIR=/music \
     CACHE_DIR=/data \
+    CACHE_IN_LIBRARY=1 \
     PORT=8080 \
     ACOUSTID_KEY="" \
-    FORCE_TRANSCODE=""
+    FORCE_TRANSCODE="" \
+    ANALYSIS_SR=44100 \
+    ANALYSIS_WORKERS=""
+# ANALYSIS_WORKERS: blank = use all CPU cores. ANALYSIS_SR: analysis sample rate
+# (higher = more detail + more CPU). HPSS separation is always on.
 
 # Pre-create mount points and prime the numba/librosa cache dir.
 RUN mkdir -p /music /data

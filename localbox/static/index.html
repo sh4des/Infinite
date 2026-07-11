@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>localbox — Infinite Jukebox for your library</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>♾ localbox</h1>
+    <p class="sub">Infinite Jukebox for your local music library</p>
+    <div class="searchbar">
+      <input id="search" type="search" placeholder="Search your whole library…" autocomplete="off" />
+    </div>
+  </header>
+
+  <nav id="crumbs" class="crumbs"></nav>
+
+  <main>
+    <ul id="folders" class="grid"></ul>
+    <ul id="files" class="list"></ul>
+    <p id="empty" class="empty" hidden>Nothing here.</p>
+    <p id="loading" class="empty">Loading…</p>
+  </main>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const foldersEl = $("#folders");
+    const filesEl = $("#files");
+    const crumbsEl = $("#crumbs");
+    const loadingEl = $("#loading");
+    const emptyEl = $("#empty");
+    const searchEl = $("#search");
+
+    function esc(s) {
+      return (s || "").replace(/[&<>"]/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    function fileItem(f) {
+      const li = document.createElement("li");
+      li.className = "file";
+      li.innerHTML =
+        `<span class="ico">♪</span>
+         <span class="meta">
+           <span class="title">${esc(f.title)}</span>
+           <span class="artist">${esc(f.artist || f.album || "")}</span>
+         </span>
+         <span class="go">play ∞</span>`;
+      li.onclick = () => {
+        location.href = "/player?id=" + encodeURIComponent(f.id) +
+          "&title=" + encodeURIComponent(f.title) +
+          "&artist=" + encodeURIComponent(f.artist || "");
+      };
+      return li;
+    }
+
+    async function loadDir(path) {
+      history.replaceState({}, "", "#" + encodeURIComponent(path || ""));
+      loadingEl.hidden = false;
+      emptyEl.hidden = true;
+      foldersEl.innerHTML = "";
+      filesEl.innerHTML = "";
+      const res = await fetch("/api/library?path=" + encodeURIComponent(path || ""));
+      if (!res.ok) { loadingEl.textContent = "Could not read that folder."; return; }
+      const data = await res.json();
+      renderCrumbs(data.path, data.parent);
+      for (const folder of data.folders) {
+        const li = document.createElement("li");
+        li.className = "folder";
+        li.innerHTML = `<span class="ico">📁</span><span>${esc(folder.name)}</span>`;
+        li.onclick = () => loadDir(folder.path);
+        foldersEl.appendChild(li);
+      }
+      for (const f of data.files) filesEl.appendChild(fileItem(f));
+      loadingEl.hidden = true;
+      emptyEl.hidden = data.folders.length + data.files.length > 0;
+    }
+
+    function renderCrumbs(path, parent) {
+      crumbsEl.innerHTML = "";
+      const home = document.createElement("a");
+      home.textContent = "♪ Library root";
+      home.onclick = () => loadDir("");
+      crumbsEl.appendChild(home);
+      if (path) {
+        const parts = path.split("/");
+        let acc = "";
+        parts.forEach((p, i) => {
+          acc = acc ? acc + "/" + p : p;
+          const sep = document.createElement("span");
+          sep.className = "sep";
+          sep.textContent = " / ";
+          crumbsEl.appendChild(sep);
+          const a = document.createElement("a");
+          a.textContent = p;
+          const target = acc;
+          a.onclick = () => loadDir(target);
+          crumbsEl.appendChild(a);
+        });
+      }
+    }
+
+    let searchTimer = null;
+    searchEl.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      const q = searchEl.value.trim();
+      searchTimer = setTimeout(() => (q ? runSearch(q) : loadDir("")), 250);
+    });
+
+    async function runSearch(q) {
+      loadingEl.hidden = false;
+      foldersEl.innerHTML = "";
+      filesEl.innerHTML = "";
+      crumbsEl.innerHTML = "";
+      const res = await fetch("/api/search?q=" + encodeURIComponent(q));
+      const data = await res.json();
+      for (const f of data.results) filesEl.appendChild(fileItem(f));
+      loadingEl.hidden = true;
+      emptyEl.hidden = data.results.length > 0;
+      if (!data.results.length) emptyEl.textContent = "No matches.";
+    }
+
+    const start = decodeURIComponent((location.hash || "").slice(1));
+    loadDir(start);
+  </script>
+</body>
+</html>

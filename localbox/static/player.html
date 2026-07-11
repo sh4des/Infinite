@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>localbox — playing</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="player-body">
+  <a class="back" href="/">← library</a>
+
+  <div class="nowplaying">
+    <div class="title" id="np-title">Loading…</div>
+    <div class="artist" id="np-artist"></div>
+  </div>
+
+  <div class="stage">
+    <canvas id="viz" width="720" height="720"></canvas>
+  </div>
+
+  <div id="status" class="status">Fetching analysis…</div>
+
+  <div class="controls" id="controls" hidden>
+    <button id="playpause" class="primary">⏸ Pause</button>
+    <label class="ctl">Jump chance
+      <input id="jump" type="range" min="0" max="100" value="35" />
+      <span id="jumpval">35%</span>
+    </label>
+    <label class="ctl">Volume
+      <input id="vol" type="range" min="0" max="100" value="85" />
+    </label>
+    <span class="stats" id="stats"></span>
+  </div>
+
+  <script src="/static/infinite.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const id = params.get("id");
+    const $ = (s) => document.querySelector(s);
+    const statusEl = $("#status");
+    document.getElementById("np-title").textContent = params.get("title") || "Track";
+    document.getElementById("np-artist").textContent = params.get("artist") || "";
+
+    const canvas = $("#viz");
+    const g = canvas.getContext("2d");
+    let jukebox = null;
+    let beats = [];
+    let points = [];
+    let curBeat = 0;
+    let jumpFlash = null;
+
+    function layout() {
+      const n = beats.length;
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const R = Math.min(cx, cy) - 40;
+      points = beats.map((b, i) => {
+        const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+        return { x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, a };
+      });
+    }
+
+    function draw() {
+      g.clearRect(0, 0, canvas.width, canvas.height);
+      // edges from the current beat's neighbourhood
+      g.lineWidth = 1;
+      for (let i = 0; i < beats.length; i++) {
+        const edges = beats[i].edges || [];
+        for (const e of edges) {
+          const p1 = points[i], p2 = points[e.to];
+          const active = i === curBeat;
+          g.strokeStyle = active ? "rgba(120,220,255,0.55)" : "rgba(120,160,200,0.06)";
+          g.beginPath();
+          g.moveTo(p1.x, p1.y);
+          const mx = (p1.x + p2.x) / 2 + (canvas.width / 2 - (p1.x + p2.x) / 2) * 0.6;
+          const my = (p1.y + p2.y) / 2 + (canvas.height / 2 - (p1.y + p2.y) / 2) * 0.6;
+          g.quadraticCurveTo(mx, my, p2.x, p2.y);
+          g.stroke();
+        }
+      }
+      // beat dots
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const isCur = i === curBeat;
+        g.beginPath();
+        g.arc(p.x, p.y, isCur ? 7 : 2.5, 0, Math.PI * 2);
+        g.fillStyle = isCur ? "#7fdcff" : (beats[i].edges && beats[i].edges.length ? "#5b7a99" : "#33465a");
+        g.fill();
+      }
+      // jump flash
+      if (jumpFlash && performance.now() - jumpFlash.t < 400) {
+        const p1 = points[jumpFlash.from], p2 = points[jumpFlash.to];
+        g.strokeStyle = "rgba(255,180,90,0.9)";
+        g.lineWidth = 2.5;
+        g.beginPath();
+        g.moveTo(p1.x, p1.y);
+        g.lineTo(p2.x, p2.y);
+        g.stroke();
+      }
+      requestAnimationFrame(draw);
+    }
+
+    async function boot() {
+      if (!id) { statusEl.textContent = "No track id."; return; }
+      let res = await fetch("/api/analyse/" + encodeURIComponent(id));
+      if (!res.ok) {
+        statusEl.textContent = "Analysis failed: " + (await res.text());
+        return;
+      }
+      const track = await res.json();
+      document.getElementById("np-title").textContent = track.info.title || "Track";
+      document.getElementById("np-artist").textContent = track.info.artist || "";
+
+      statusEl.textContent = "Loading audio…";
+      const audioRes = await fetch("/api/audio/" + encodeURIComponent(id));
+      const arr = await audioRes.arrayBuffer();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      InfiniteJukebox._ctx = ctx;
+      const buffer = await ctx.decodeAudioData(arr);
+
+      jukebox = new InfiniteJukebox(track, buffer, {
+        onBeat: (i, stats) => {
+          curBeat = i;
+          document.getElementById("stats").textContent =
+            `${stats.beatsPlayed} beats · ${stats.jumps} jumps`;
+        },
+        onJump: (from, to) => { jumpFlash = { from, to, t: performance.now() }; },
+      });
+      beats = jukebox.beats;
+      layout();
+      draw();
+
+      statusEl.textContent = `∞ playing — ${beats.length} beats, ${jukebox.edgeCount} jump paths`;
+      document.getElementById("controls").hidden = false;
+      jukebox.play();
+    }
+
+    $("#playpause").onclick = function () {
+      if (!jukebox) return;
+      if (jukebox.playing) { jukebox.pause(); this.textContent = "▶ Play"; }
+      else { jukebox.resume(); this.textContent = "⏸ Pause"; }
+    };
+    $("#jump").oninput = function () {
+      document.getElementById("jumpval").textContent = this.value + "%";
+      if (jukebox) jukebox.setJumpProbability(this.value / 100);
+    };
+    $("#vol").oninput = function () { if (jukebox) jukebox.setVolume(this.value / 100); };
+
+    boot();
+  </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+.git
+*.md
+docker-compose.yml
+localbox.xml

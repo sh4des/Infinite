@@ -1,0 +1,19 @@
+services:
+  localbox:
+    build: .
+    image: localbox:latest
+    container_name: localbox
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Optional acoustic fingerprinting for untagged files.
+      # Get a free key at https://acoustid.org/new-application
+      ACOUSTID_KEY: ""
+      # Comma-separated extensions to always transcode to mp3, e.g. ".flac,.wav"
+      FORCE_TRANSCODE: ""
+    volumes:
+      # Your music library, read-only. On Unraid this is /mnt/user/music.
+      - /mnt/user/music:/music:ro
+      # Analysis + transcode cache (persist so tracks only analyze once).
+      - /mnt/user/appdata/localbox:/data

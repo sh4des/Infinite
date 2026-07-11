@@ -1,5 +1,5 @@
 """
-app.py — localbox backend.
+app.py — infinite-jukebox backend.
 
 Serves:
   GET  /                         -> library browser UI
@@ -11,6 +11,9 @@ Serves:
   GET  /api/track/{id}           -> lightweight metadata for one track
   POST /api/analyse-folder?path= -> analyse all uncached tracks in a folder across cores
   GET  /api/analyse-status       -> progress of the current folder analysis
+  POST /api/stats/play           -> record a track selection
+  POST /api/stats/time           -> accumulate listening time (heartbeat/beacon)
+  GET  /api/stats                -> lifetime playback stats
   GET  /healthy                  -> health check
 
 Everything is local. No Spotify, no YouTube, no database.
@@ -20,20 +23,34 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import random
 import subprocess
+import sys
 import threading
-from concurrent.futures import ProcessPoolExecutor
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 
-import analyzer
 import library
+# analyzer.py is invoked as an isolated subprocess (see _run_analyzer), not
+# imported here — so a crash in librosa/numba can never take down the server.
+
+# --------------------------------------------------------------------------- #
+# Logging
+# --------------------------------------------------------------------------- #
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("infinite-jukebox")
 
 
 def _finite(obj):
@@ -54,14 +71,14 @@ FORCE_TRANSCODE = {
 }
 
 # Where the analysis + transcode cache lives. By default it goes *inside* the
-# library (a hidden .localbox folder) so the fingerprints/analysis travel with
+# library (a hidden .infinite-jukebox folder) so the fingerprints/analysis travel with
 # the music. Set CACHE_IN_LIBRARY=0 to use CACHE_DIR (default /data) instead.
 CACHE_IN_LIBRARY = os.environ.get("CACHE_IN_LIBRARY", "1").lower() in ("1", "true", "yes")
 
 
 def _resolve_cache_dir() -> str:
     if CACHE_IN_LIBRARY:
-        candidate = os.path.join(MUSIC_DIR, ".localbox")
+        candidate = os.path.join(MUSIC_DIR, ".infinite-jukebox")
         try:
             os.makedirs(candidate, exist_ok=True)
             # confirm it is actually writable (mount may still be read-only)
@@ -71,8 +88,8 @@ def _resolve_cache_dir() -> str:
             os.remove(probe)
             return candidate
         except OSError:
-            print(f"[localbox] {candidate} not writable; falling back to /data. "
-                  f"Mount your music share read-write to keep the cache with the library.")
+            log.warning("%s not writable; falling back to /data. Mount your music "
+                        "share read-write to keep the cache with the library.", candidate)
     return os.environ.get("CACHE_DIR", "/data")
 
 
@@ -84,18 +101,63 @@ STATIC_DIR = os.path.join(HERE, "static")
 
 os.makedirs(ANALYSIS_CACHE, exist_ok=True)
 os.makedirs(AUDIO_CACHE, exist_ok=True)
-print(f"[localbox] cache dir: {CACHE_DIR}")
+log.info("cache dir: %s", CACHE_DIR)
+log.info("music dir: %s", MUSIC_DIR)
 
-app = FastAPI(title="localbox")
+app = FastAPI(title="infinite-jukebox")
 
-# Multicore analysis: a pool of worker processes so several tracks (or one big
-# pre-warm run) can analyse on separate CPU cores at once. Each worker is a real
-# OS process, sidestepping the GIL.
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception("unhandled error: %s %s", request.method, request.url.path)
+        raise
+    dt = (time.perf_counter() - t0) * 1000
+    lvl = logging.WARNING if response.status_code >= 400 else logging.INFO
+    log.log(lvl, "%s %s -> %d (%.0f ms)", request.method,
+            request.url.path, response.status_code, dt)
+    return response
+
+# Multicore analysis: each analysis runs as an isolated child process
+# (analyzer.py as a CLI). Real processes -> real parallelism past the GIL, and —
+# crucially — a crash in one analysis (a corrupt file, a native segfault in
+# librosa/numba) can only fail that one track. It can never poison a shared pool
+# and take down analysis for everything else. A semaphore caps concurrency so we
+# use at most ANALYSIS_WORKERS cores at once.
 _workers_env = os.environ.get("ANALYSIS_WORKERS", "").strip()
 ANALYSIS_WORKERS = int(_workers_env) if _workers_env.isdigit() and int(_workers_env) > 0 \
     else (os.cpu_count() or 2)
-_pool = ProcessPoolExecutor(max_workers=ANALYSIS_WORKERS)
-print(f"[localbox] analysis workers: {ANALYSIS_WORKERS}")
+_analysis_sem = asyncio.Semaphore(ANALYSIS_WORKERS)
+_ANALYZER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyzer.py")
+log.info("analysis workers: %d", ANALYSIS_WORKERS)
+
+
+async def _run_analyzer(path: str):
+    """Analyse `path` in an isolated subprocess; return (analysis, duration)."""
+    async with _analysis_sem:
+        log.info("analysing: %s", path)
+        t0 = time.perf_counter()
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, _ANALYZER, path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        dt = time.perf_counter() - t0
+        if proc.returncode != 0 or not out:
+            msg = (err.decode(errors="replace").strip() or "analyzer exited abnormally")
+            last = msg.splitlines()[-1][:300] if msg else "analyzer failed"
+            log.error("analysis FAILED (%.1fs, rc=%s): %s — %s", dt, proc.returncode, path, last)
+            raise RuntimeError(last)
+        data = json.loads(out)
+        a = data["analysis"]
+        log.info("analysed in %.1fs: %s (%d beats, %d segments, %.0fs audio)",
+                 dt, os.path.basename(path), len(a.get("beats", [])),
+                 len(a.get("segments", [])), data["audio_summary"]["duration"])
+        return a, data["audio_summary"]["duration"]
 
 # Per-id threading locks (used for on-the-fly transcode dedupe).
 _locks: dict[str, threading.Lock] = {}
@@ -126,10 +188,57 @@ def _alock_for(key: str) -> asyncio.Lock:
 # Live progress of a folder (batch) analysis run.
 _batch = {"running": False, "path": None, "total": 0, "done": 0}
 
+# -------- lifetime playback stats (persisted, survives redeploys) ----------- #
+# Stats live in a DEDICATED persistent dir, NOT in the cache dir. The cache dir
+# moves depending on CACHE_IN_LIBRARY (library/.infinite-jukebox vs /data), and
+# the library cache can be cleaned — so keeping stats there risks losing them.
+# STATE_DIR defaults to /data, which the deploy script / template ALWAYS bind-
+# mount to persistent appdata, so stats survive `docker rm`/rebuild/redeploy and
+# even toggling CACHE_IN_LIBRARY.
+STATE_DIR = os.environ.get("STATE_DIR", "/data")
+try:
+    os.makedirs(STATE_DIR, exist_ok=True)
+except OSError:
+    STATE_DIR = CACHE_DIR  # last-resort fallback if /data isn't writable
+STATS_FILE = os.path.join(STATE_DIR, "stats.json")
+_LEGACY_STATS = os.path.join(CACHE_DIR, "stats.json")  # pre-change location
+_stats_lock = threading.Lock()
 
-@app.on_event("shutdown")
-def _shutdown_pool():
-    _pool.shutdown(wait=False, cancel_futures=True)
+
+def _load_stats() -> dict:
+    # Prefer the persistent location; migrate legacy stats from the cache dir if
+    # present and we don't have a persistent copy yet (so nothing is lost).
+    for src in (STATS_FILE, _LEGACY_STATS):
+        try:
+            with open(src, "r", encoding="utf-8") as fh:
+                s = json.load(fh)
+                s.setdefault("total_seconds", 0.0)
+                s.setdefault("tracks", {})
+                if src != STATS_FILE:
+                    log.info("migrating playback stats from %s -> %s", src, STATS_FILE)
+                return s
+        except Exception:
+            continue
+    return {"total_seconds": 0.0, "tracks": {}}
+
+
+_stats = _load_stats()
+
+
+def _save_stats():
+    try:
+        tmp = STATS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(_stats, fh)
+        os.replace(tmp, STATS_FILE)
+    except OSError as exc:
+        log.warning("could not persist stats to %s: %s", STATS_FILE, exc)
+
+
+# Persist immediately at startup so a migrated/fresh stats file exists in the
+# durable location even before the first playback event.
+log.info("stats file: %s (%d tracks tracked)", STATS_FILE, len(_stats.get("tracks", {})))
+_save_stats()
 
 
 # --------------------------------------------------------------------------- #
@@ -143,6 +252,11 @@ def index():
 @app.get("/player", response_class=HTMLResponse)
 def player():
     return FileResponse(os.path.join(STATIC_DIR, "player.html"))
+
+
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page():
+    return FileResponse(os.path.join(STATIC_DIR, "stats.html"))
 
 
 @app.get("/healthy")
@@ -251,8 +365,7 @@ async def _ensure_analysis(tid: str, path: str) -> dict:
         if cached is not None:
             return cached
 
-        loop = asyncio.get_running_loop()
-        analysis, duration = await loop.run_in_executor(_pool, analyzer.analyze, path)
+        analysis, duration = await _run_analyzer(path)
         track = _build_track(tid, path, analysis, duration)
 
         tmp = _cache_file(tid) + ".tmp"
@@ -275,17 +388,17 @@ async def api_analyse(tid: str):
 
 
 async def _batch_run(items: list[tuple[str, str]]):
+    # Concurrency is bounded by the global _analysis_sem inside _run_analyzer, so
+    # folder-analysis and on-demand plays share the same core budget.
     _batch.update(running=True, total=len(items), done=0)
-    sem = asyncio.Semaphore(ANALYSIS_WORKERS)
 
     async def one(tid: str, path: str):
-        async with sem:
-            try:
-                await _ensure_analysis(tid, path)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[localbox] folder analyse failed for {tid}: {exc}")
-            finally:
-                _batch["done"] += 1
+        try:
+            await _ensure_analysis(tid, path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("folder analyse failed for %s: %s", tid, exc)
+        finally:
+            _batch["done"] += 1
 
     try:
         await asyncio.gather(*(one(t, p) for t, p in items))
@@ -324,37 +437,124 @@ def api_analyse_status():
 
 
 # --------------------------------------------------------------------------- #
+# Lifetime stats
+# --------------------------------------------------------------------------- #
+def _track_stat(tid: str) -> dict:
+    t = _stats["tracks"].get(tid)
+    if t is None:
+        t = _stats["tracks"][tid] = {"title": "", "artist": "", "duration": 0.0,
+                                     "plays": 0, "seconds": 0.0}
+    return t
+
+
+@app.post("/api/stats/play")
+async def api_stats_play(request: Request):
+    """Record that a track was selected/opened for playback."""
+    body = await request.json()
+    tid = body.get("id")
+    if not tid:
+        raise HTTPException(400, "missing id")
+    with _stats_lock:
+        t = _track_stat(tid)
+        t["plays"] += 1
+        t["title"] = body.get("title") or t["title"]
+        t["artist"] = body.get("artist") or t["artist"]
+        if body.get("duration"):
+            t["duration"] = float(body["duration"])
+        _save_stats()
+    return {"ok": True}
+
+
+@app.post("/api/stats/time")
+async def api_stats_time(request: Request):
+    """Accumulate elapsed listening time for a track (heartbeat / beacon)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "bad body")
+    tid = body.get("id")
+    secs = float(body.get("seconds") or 0)
+    if not tid or secs <= 0:
+        return {"ok": True}
+    secs = min(secs, 3600)  # guard against absurd deltas from a slept tab
+    with _stats_lock:
+        t = _track_stat(tid)
+        t["seconds"] += secs
+        if body.get("duration") and not t["duration"]:
+            t["duration"] = float(body["duration"])
+        _stats["total_seconds"] += secs
+        _save_stats()
+    return {"ok": True}
+
+
+@app.get("/api/stats")
+def api_stats():
+    with _stats_lock:
+        tracks = []
+        total_equiv = 0.0
+        for tid, t in _stats["tracks"].items():
+            dur = t.get("duration") or 0
+            equiv = (t["seconds"] / dur) if dur > 0 else 0.0
+            total_equiv += equiv
+            tracks.append({
+                "id": tid, "title": t.get("title") or tid,
+                "artist": t.get("artist", ""), "plays": t.get("plays", 0),
+                "seconds": round(t.get("seconds", 0.0), 1),
+                "equiv": round(equiv, 2),
+            })
+        by_plays = sorted(tracks, key=lambda x: (-x["plays"], -x["seconds"]))[:25]
+        by_time = sorted(tracks, key=lambda x: -x["seconds"])[:25]
+        return {
+            "total_seconds": round(_stats["total_seconds"], 1),
+            "total_equivalent_plays": round(total_equiv, 1),
+            "distinct_tracks": len(tracks),
+            "top_by_plays": by_plays,
+            "top_by_time": by_time,
+        }
+
+
+# --------------------------------------------------------------------------- #
 # Audio
 # --------------------------------------------------------------------------- #
-def _audio_path(tid: str, src: str) -> str:
-    """Return a path the browser can decode: original if safe, else a cached mp3."""
+def _audio_path(tid: str, src: str, force: bool = False) -> str:
+    """Return a path the browser can decode: original if safe, else a cached mp3.
+
+    `force=True` always returns the mp3 transcode — used as an iOS/Safari
+    fallback, since Web Audio there can't decode ogg/opus/flac."""
     ext = os.path.splitext(src)[1].lower()
-    if ext in library.BROWSER_SAFE_EXTS and ext not in FORCE_TRANSCODE:
+    if not force and ext in library.BROWSER_SAFE_EXTS and ext not in FORCE_TRANSCODE:
         return src
 
     out = os.path.join(AUDIO_CACHE, f"{tid}.mp3")
     with _lock_for(f"transcode:{tid}"):
         if os.path.exists(out) and os.path.getsize(out) > 0:
             return out
+        log.info("transcoding to mp3: %s", os.path.basename(src))
+        t0 = time.perf_counter()
         tmp = out + ".tmp"
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", src, "-vn", "-map", "a:0",
-             "-codec:a", "libmp3lame", "-q:a", "2", tmp],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", src, "-vn", "-map", "a:0",
+                 "-codec:a", "libmp3lame", "-q:a", "2", tmp],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            log.error("transcode FAILED: %s", src)
+            raise
         os.replace(tmp, out)
+        log.info("transcoded in %.1fs: %s", time.perf_counter() - t0, os.path.basename(src))
     return out
 
 
 @app.get("/api/audio/{tid}")
-def api_audio(tid: str, request: Request):
+def api_audio(tid: str, request: Request, transcode: int = 0):
     src = library.resolve(MUSIC_DIR, tid)
     if not src:
         raise HTTPException(404, "track not found")
     try:
-        path = _audio_path(tid, src)
+        path = _audio_path(tid, src, force=bool(transcode))
     except subprocess.CalledProcessError:
         raise HTTPException(500, "transcode failed")
 

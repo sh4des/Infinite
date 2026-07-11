@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>infinite-jukebox — lifetime stats</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="topbar"><a class="back" href="/">← library</a></div>
+
+  <header>
+    <h1>📊 Lifetime stats</h1>
+    <p class="sub">how much you've leaned on the infinite loop</p>
+  </header>
+
+  <main>
+    <div class="tiles" id="tiles"></div>
+
+    <h2 class="statshead">Most selected</h2>
+    <ul class="list" id="by-plays"></ul>
+
+    <h2 class="statshead">Most time in the loop</h2>
+    <ul class="list" id="by-time"></ul>
+
+    <p id="empty" class="empty" hidden>No playback recorded yet — go play something ∞</p>
+  </main>
+
+  <script src="/static/errors.js"></script>
+  <script>
+    function fmtDuration(totalSec) {
+      const s = Math.floor(totalSec);
+      const days = Math.floor(s / 86400);
+      const hrs = Math.floor((s % 86400) / 3600);
+      const mins = Math.floor((s % 3600) / 60);
+      const secs = s % 60;
+      const parts = [];
+      if (days) parts.push(days + "d");
+      if (hrs || days) parts.push(hrs + "h");
+      parts.push(mins + "m");
+      if (!days && !hrs) parts.push(secs + "s");
+      return parts.join(" ");
+    }
+    function esc(s) {
+      return (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+    function tile(value, label) {
+      return `<div class="tile"><div class="tile-val">${value}</div><div class="tile-lbl">${label}</div></div>`;
+    }
+    function row(t, metric) {
+      return `<li class="file">
+        <span class="meta">
+          <span class="title">${esc(t.title)}</span>
+          <span class="artist">${esc(t.artist || "")}</span>
+        </span>
+        <span class="metric">${metric}</span>
+      </li>`;
+    }
+
+    (async function () {
+      const s = await (await fetch("/api/stats")).json();
+      if (!s.distinct_tracks) { document.getElementById("empty").hidden = false; return; }
+
+      document.getElementById("tiles").innerHTML =
+        tile(fmtDuration(s.total_seconds), "total time played") +
+        tile(s.total_equivalent_plays, "full-song equivalents") +
+        tile(s.distinct_tracks, "distinct tracks played");
+
+      document.getElementById("by-plays").innerHTML =
+        s.top_by_plays.map((t) => row(t, `${t.plays}× · ${t.equiv} loops`)).join("");
+      document.getElementById("by-time").innerHTML =
+        s.top_by_time.map((t) => row(t, `${fmtDuration(t.seconds)} · ${t.equiv}×`)).join("");
+    })();
+  </script>
+</body>
+</html>

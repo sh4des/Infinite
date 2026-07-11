@@ -1,13 +1,13 @@
 services:
-  localbox:
+  infinite-jukebox:
     build: .
-    image: localbox:latest
-    container_name: localbox
+    image: infinite-jukebox:latest
+    container_name: infinite-jukebox
     restart: unless-stopped
     ports:
       - "8239:8080"
     environment:
-      # Store analysis + transcode cache inside the library (<music>/.localbox)
+      # Store analysis + transcode cache inside the library (<music>/.infinite-jukebox)
       # so the fingerprints travel with the music. Requires a read-write music
       # mount (below). Set to 0 to use the /data volume instead (and switch the
       # music mount back to :ro).
@@ -18,9 +18,9 @@ services:
       # Comma-separated extensions to always transcode to mp3, e.g. ".flac,.wav"
       FORCE_TRANSCODE: ""
     volumes:
-      # Your music library. READ-WRITE because the cache lives in <music>/.localbox.
+      # Your music library. READ-WRITE because the cache lives in <music>/.infinite-jukebox.
       # If CACHE_IN_LIBRARY=0, change this to ":ro".
       - /mnt/user/music:/music:rw
       # Fallback cache (used only when CACHE_IN_LIBRARY=0, or if the library
       # turns out to be read-only).
-      - /mnt/user/appdata/localbox:/data
+      - /mnt/user/appdata/infinite-jukebox:/data

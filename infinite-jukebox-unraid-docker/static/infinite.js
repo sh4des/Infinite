@@ -34,6 +34,7 @@
     var s = 0;
     for (var b = 0; b < beats.length; b++) {
       var beat = beats[b];
+      beat.index = b;
       var end = beat.start + beat.duration;
       var pitches = [], timbres = [], loud = [];
       while (s > 0 && segs[s].start > beat.start) s--;
@@ -59,6 +60,78 @@
       for (var z = 0; z < beats.length; z++) beats[z].feature[d] = (beats[z].feature[d] - m) / sd;
     }
     assignBarPhase(analysis);
+    assignSections(analysis);
+  }
+
+  // Classify sections as chorus-like (repeated) vs verse-like (unique), and tag
+  // each beat with its section, whether that section repeats, and how far it is
+  // from the section's start/end. This lets the jumper keep a verse intact and
+  // only splice at section boundaries — while allowing free jumps inside a
+  // repeated chorus (where a splice is inaudible because the part recurs anyway).
+  function assignSections(analysis) {
+    var beats = analysis.beats;
+    var sections = analysis.sections || [];
+    var i, b;
+
+    if (sections.length < 2) {
+      for (i = 0; i < beats.length; i++) {
+        beats[i].sec = 0; beats[i].inChorus = false;
+        beats[i].fromSecStart = i; beats[i].toSecEnd = beats.length - 1 - i;
+      }
+      return;
+    }
+
+    // map each beat to a section index
+    var si = 0;
+    var secBeats = [];
+    for (i = 0; i < sections.length; i++) secBeats.push([]);
+    for (b = 0; b < beats.length; b++) {
+      while (si < sections.length - 1 && beats[b].start >= sections[si + 1].start) si++;
+      beats[b].sec = si;
+      secBeats[si].push(b);
+    }
+
+    // mean pitch+timbre feature per section
+    var secFeat = secBeats.map(function (idxs) {
+      var f = new Array(24).fill(0);
+      idxs.forEach(function (gi) {
+        var bf = beats[gi].feature;
+        for (var k = 0; k < 24; k++) f[k] += bf[k];
+      });
+      if (idxs.length) for (var k = 0; k < 24; k++) f[k] /= idxs.length;
+      return f;
+    });
+
+    // adaptive similarity threshold from the lower quartile of section-pair dists
+    var dists = [];
+    for (i = 0; i < sections.length; i++)
+      for (var j = i + 1; j < sections.length; j++)
+        dists.push(distance(secFeat[i], secFeat[j]));
+    dists.sort(function (a, c) { return a - c; });
+    var thr = dists.length ? dists[Math.floor(dists.length * 0.25)] : Infinity;
+
+    // a section is "chorus" if it closely matches another section of similar length
+    for (i = 0; i < sections.length; i++) {
+      var rep = false;
+      for (var j2 = 0; j2 < sections.length; j2++) {
+        if (i === j2) continue;
+        var la = sections[i].duration, lb = sections[j2].duration;
+        var lenOk = Math.abs(la - lb) / Math.max(la, lb, 0.001) < 0.35;
+        if (lenOk && distance(secFeat[i], secFeat[j2]) <= thr) { rep = true; break; }
+      }
+      sections[i].isChorus = rep;
+    }
+
+    // annotate beats with chorus flag and distance to section edges
+    for (i = 0; i < sections.length; i++) {
+      var idxs = secBeats[i];
+      for (var p = 0; p < idxs.length; p++) {
+        var beat = beats[idxs[p]];
+        beat.inChorus = !!sections[i].isChorus;
+        beat.fromSecStart = p;
+        beat.toSecEnd = idxs.length - 1 - p;
+      }
+    }
   }
 
   // Determine each beat's index within its bar (0 = downbeat). Falls back to a
@@ -98,6 +171,7 @@
     var window = opts.window || 6;
     var minGap = opts.minGap || Math.max(4, Math.floor(n / 20));
     var loudTol = opts.loudTol || 6;        // dB
+    var bnd = opts.boundaryTol != null ? opts.boundaryTol : 2;  // beats from a section edge
     var feats = beats.map(function (x) { return x.feature; });
 
     function windowDist(i, j) {
@@ -110,32 +184,52 @@
       return cnt ? sum / cnt : Infinity;
     }
 
-    var candidates = [];
-    for (var i = 0; i < n; i++) {
-      for (var j = i + minGap; j < n; j++) {
-        if (beats[i].phase !== beats[j].phase) continue;                 // stay on-beat
-        if (Math.abs(beats[i].loudness - beats[j].loudness) > loudTol) continue; // similar energy
-        var d = windowDist(i, j);
-        if (isFinite(d)) candidates.push([d, i, j]);
-      }
+    // Where may a jump ORIGINATE? Inside a chorus (repeats anyway), or right at
+    // the end of a section (so a verse plays through, then splices at the seam).
+    function canSrc(bt) {
+      return bt.inChorus || (bt.toSecEnd != null && bt.toSecEnd <= bnd);
     }
-    candidates.sort(function (a, b) { return a[0] - b[0]; });
+    // Where may a jump LAND? Inside a chorus, or at the start of a section (so we
+    // never drop into the middle of a verse).
+    function canDst(bt) {
+      return bt.inChorus || (bt.fromSecStart != null && bt.fromSecStart <= bnd);
+    }
 
-    for (var q = 0; q < beats.length; q++) beats[q].edges = [];
-    // adaptive threshold: keep the closest matches, capped per-beat so no single
-    // beat becomes a jump magnet
-    var target = Math.min(candidates.length, Math.max(12, Math.floor(n / 4)));
-    var perBeatCap = 6;
-    var kept = 0;
-    for (var c = 0; c < candidates.length && kept < target; c++) {
-      var dd = candidates[c][0], a = candidates[c][1], bb = candidates[c][2];
-      if (beats[a].edges.length >= perBeatCap && beats[bb].edges.length >= perBeatCap) continue;
-      beats[bb].edges.push({ to: a, dist: dd });
-      beats[a].edges.push({ to: bb, dist: dd });
-      kept++;
+    // Build the edge set; `gate` toggles the verse/chorus restriction so we can
+    // fall back to unrestricted edges if gating leaves the graph too sparse.
+    function build(gate) {
+      for (var q = 0; q < n; q++) beats[q].edges = [];
+      var cand = [];
+      for (var i = 0; i < n; i++) {
+        for (var j = i + minGap; j < n; j++) {
+          if (beats[i].phase !== beats[j].phase) continue;                 // stay on-beat
+          if (Math.abs(beats[i].loudness - beats[j].loudness) > loudTol) continue; // similar energy
+          var fwd = !gate || (canSrc(beats[i]) && canDst(beats[j]));       // i -> j
+          var bwd = !gate || (canSrc(beats[j]) && canDst(beats[i]));       // j -> i
+          if (!fwd && !bwd) continue;
+          var d = windowDist(i, j);
+          if (isFinite(d)) cand.push([d, i, j, fwd, bwd]);
+        }
+      }
+      cand.sort(function (a, b) { return a[0] - b[0]; });
+      var target = Math.min(cand.length, Math.max(12, Math.floor(n / 4)));
+      var perBeatCap = 6, kept = 0;
+      for (var c = 0; c < cand.length && kept < target; c++) {
+        var dd = cand[c][0], a = cand[c][1], bb = cand[c][2];
+        if (beats[a].edges.length >= perBeatCap && beats[bb].edges.length >= perBeatCap) continue;
+        if (cand[c][3]) beats[a].edges.push({ to: bb, dist: dd });        // forward
+        if (cand[c][4]) beats[bb].edges.push({ to: a, dist: dd });        // backward
+        kept++;
+      }
+      for (var e = 0; e < n; e++)
+        beats[e].edges.sort(function (x, y) { return x.dist - y.dist; });
+      return kept;
     }
-    for (var e = 0; e < beats.length; e++)
-      beats[e].edges.sort(function (x, y) { return x.dist - y.dist; });
+
+    var kept = build(true);
+    // If the verse/chorus gate starved the graph (few or no jumps), relax it so
+    // the track still loops rather than playing straight through once.
+    if (kept < Math.max(6, Math.floor(n / 30))) kept = build(false);
     return kept;
   }
 

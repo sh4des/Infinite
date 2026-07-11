@@ -74,10 +74,16 @@ def list_dir(music_dir: str, rel: str = "") -> dict:
                         "title": meta["title"] or os.path.splitext(entry.name)[0],
                         "artist": meta["artist"],
                         "album": meta["album"],
+                        "disc": meta["disc"],
+                        "track": meta["track"],
                         "ext": ext,
                     })
     folders.sort(key=lambda f: f["name"].lower())
-    files.sort(key=lambda f: (f["artist"].lower(), f["title"].lower()))
+    # Album order: by disc then track number, then filename. Tracks without a
+    # number sort last (large sentinel) so numbered tracks lead in album order.
+    files.sort(key=lambda f: (f["disc"] or 1,
+                              f["track"] if f["track"] else 10_000,
+                              f["name"].lower()))
     parent = os.path.dirname(rel.rstrip("/")) if rel else None
     return {"path": rel, "parent": parent, "folders": folders, "files": files}
 
@@ -86,7 +92,7 @@ def list_dir(music_dir: str, rel: str = "") -> dict:
 def _index(music_dir: str) -> tuple:
     """Full recursive index: id -> absolute path. Cached; call clear_index() to refresh.
 
-    Hidden folders (notably the .localbox cache) are skipped so cached
+    Hidden folders (notably the .infinite-jukebox cache) are skipped so cached
     transcodes never masquerade as library tracks."""
     mapping = {}
     for dirpath, dirs, filenames in os.walk(music_dir):
@@ -141,10 +147,24 @@ def search(music_dir: str, query: str, limit: int = 100) -> list[dict]:
     return results
 
 
+def _lead_int(s: str):
+    """Parse the leading integer from tags like '3', '3/12'. None if absent."""
+    if not s:
+        return None
+    num = ""
+    for ch in str(s).strip():
+        if ch.isdigit():
+            num += ch
+        else:
+            break
+    return int(num) if num else None
+
+
 def read_tags(path: str) -> dict:
-    """Best-effort title/artist/album/duration from embedded tags."""
+    """Best-effort title/artist/album/duration/track/disc from embedded tags."""
     title = artist = album = ""
     duration = 0.0
+    track = disc = None
     try:
         from mutagen import File as MutagenFile
 
@@ -164,9 +184,12 @@ def read_tags(path: str) -> dict:
             title = first("title")
             artist = first("artist", "albumartist")
             album = first("album")
+            track = _lead_int(first("tracknumber", "track"))
+            disc = _lead_int(first("discnumber", "disc"))
     except Exception:
         pass
-    return {"title": title, "artist": artist, "album": album, "duration": duration}
+    return {"title": title, "artist": artist, "album": album,
+            "duration": duration, "track": track, "disc": disc}
 
 
 def read_rating(path: str):

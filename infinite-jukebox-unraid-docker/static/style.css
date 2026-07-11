@@ -10,12 +10,40 @@
 
 * { box-sizing: border-box; }
 
+/* critical-error banner (errors.js) */
+.errbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px calc(12px);
+  padding-top: max(12px, env(safe-area-inset-top));
+  background: #b3261e;
+  color: #fff;
+  font-size: 14px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+.errbar-msg { flex: 1; word-break: break-word; }
+.errbar-x {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
 body {
   margin: 0;
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: radial-gradient(1200px 600px at 50% -10%, #17222e, var(--bg));
   color: var(--text);
   min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
 }
 
 header {
@@ -101,6 +129,7 @@ main { max-width: 860px; margin: 0 auto 60px; padding: 0 16px; }
 }
 .file:hover { background: var(--panel); }
 .file .ico { color: var(--accent); }
+.file .tnum { min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; }
 .file .meta { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .file .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file .artist { color: var(--dim); font-size: 13px; }
@@ -109,19 +138,47 @@ main { max-width: 860px; margin: 0 auto 60px; padding: 0 16px; }
 
 .empty { text-align: center; color: var(--dim); margin: 40px 0; }
 
-/* ---------- player ---------- */
-.player-body { text-align: center; }
+/* ---------- top bar / nav ---------- */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: max(10px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 4px max(16px, env(safe-area-inset-left));
+}
 .back {
   display: inline-block;
-  margin: 16px;
   color: var(--accent);
   text-decoration: none;
-  float: left;
+  font-size: 14px;
 }
+.back:hover { text-decoration: underline; }
+.stats-link { margin-left: auto; }
+
+/* ---------- player ---------- */
+.player-body { text-align: center; }
 .nowplaying { padding: 24px 16px 6px; }
 .nowplaying .title { font-size: 24px; font-weight: 700; }
 .nowplaying .artist { color: var(--dim); }
 .nowplaying .queueinfo { color: var(--accent2); font-size: 13px; margin-top: 6px; }
+.nowplaying .playtime { color: var(--dim); font-size: 13px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+/* landing-page stats strip */
+.home-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  justify-content: center;
+  max-width: 860px;
+  margin: 4px auto 0;
+  padding: 10px 16px;
+  color: var(--dim);
+  font-size: 13px;
+  text-decoration: none;
+}
+.home-stats .hs b { color: var(--accent); font-weight: 700; }
+.home-stats .hs-more { color: var(--accent2); }
+.home-stats:hover .hs-more { text-decoration: underline; }
 
 .stage { position: relative; display: flex; justify-content: center; padding: 8px; }
 .tapstart {
@@ -181,4 +238,45 @@ button.secondary {
   cursor: pointer;
 }
 button.secondary:hover { border-color: var(--accent); color: var(--accent); }
+.controls select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
 .stats { color: var(--dim); font-size: 13px; }
+
+/* ---------- stats page ---------- */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 8px 0 24px;
+}
+.tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 16px;
+  text-align: center;
+}
+.tile-val { font-size: 26px; font-weight: 800; color: var(--accent); }
+.tile-lbl { color: var(--dim); font-size: 13px; margin-top: 4px; }
+.statshead { font-size: 16px; margin: 22px 0 6px; color: var(--text); }
+.file .metric { color: var(--accent2); font-size: 13px; margin-left: 12px; white-space: nowrap; }
+
+/* ---------- mobile / iPhone portrait ---------- */
+@media (max-width: 640px) {
+  header { padding: 16px 14px 6px; }
+  header h1 { font-size: 24px; }
+  header .sub { margin: 2px 0 12px; }
+  .shuf { padding: 8px 12px; font-size: 13px; }
+  .nowplaying { padding: 12px 14px 4px; }
+  .nowplaying .title { font-size: 20px; }
+  canvas { width: min(92vw, 56vh); height: min(92vw, 56vh); }
+  .controls { gap: 12px 14px; padding: 14px 14px max(14px, env(safe-area-inset-bottom)); }
+  .controls .ctl { font-size: 13px; }
+  .controls input[type="range"] { width: 120px; }
+  main { padding: 0 14px calc(40px + env(safe-area-inset-bottom)); }
+}

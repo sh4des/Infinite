@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>localbox — Infinite Jukebox for your library</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>infinite-jukebox — Infinite Jukebox for your library</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <div class="topbar"><a class="back stats-link" href="/stats">📊 stats</a></div>
   <header>
-    <h1>♾ localbox</h1>
+    <h1>♾ infinite-jukebox</h1>
     <p class="sub">Infinite Jukebox for your local music library</p>
     <div class="searchbar">
       <input id="search" type="search" placeholder="Search your whole library…" autocomplete="off" />
@@ -22,6 +23,8 @@
     <div id="an-status" class="batch-status"></div>
   </header>
 
+  <a id="home-stats" class="home-stats" href="/stats" hidden></a>
+
   <nav id="crumbs" class="crumbs"></nav>
 
   <main>
@@ -31,6 +34,7 @@
     <p id="loading" class="empty">Loading…</p>
   </main>
 
+  <script src="/static/errors.js"></script>
   <script>
     const $ = (s) => document.querySelector(s);
     const foldersEl = $("#folders");
@@ -48,8 +52,9 @@
     function fileItem(f) {
       const li = document.createElement("li");
       li.className = "file";
+      const ico = f.track ? String(f.track).padStart(2, "0") : "♪";
       li.innerHTML =
-        `<span class="ico">♪</span>
+        `<span class="ico tnum">${ico}</span>
          <span class="meta">
            <span class="title">${esc(f.title)}</span>
            <span class="artist">${esc(f.artist || f.album || "")}</span>
@@ -58,7 +63,8 @@
       li.onclick = () => {
         location.href = "/player?id=" + encodeURIComponent(f.id) +
           "&title=" + encodeURIComponent(f.title) +
-          "&artist=" + encodeURIComponent(f.artist || "");
+          "&artist=" + encodeURIComponent(f.artist || "") +
+          "&path=" + encodeURIComponent(f.path || "");
       };
       return li;
     }
@@ -160,6 +166,24 @@
       anEl.textContent = `🎛 analysing ${s.queued} tracks across ${s.workers} cores…`;
       if (!anTimer) anTimer = setInterval(pollAnalyse, 2000);
     };
+
+    // landing-page stats summary (links to the full /stats page)
+    (async function loadHomeStats() {
+      try {
+        const s = await (await fetch("/api/stats")).json();
+        if (!s.distinct_tracks) return;
+        const sec = Math.floor(s.total_seconds);
+        const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+        const played = (d ? d + "d " : "") + (h || d ? h + "h " : "") + m + "m";
+        const el = document.getElementById("home-stats");
+        el.innerHTML =
+          `<span class="hs"><b>${played}</b> played</span>` +
+          `<span class="hs"><b>${s.total_equivalent_plays}</b> full-song loops</span>` +
+          `<span class="hs"><b>${s.distinct_tracks}</b> tracks</span>` +
+          `<span class="hs hs-more">full stats ›</span>`;
+        el.hidden = false;
+      } catch (e) { /* stats are optional */ }
+    })();
 
     const start = decodeURIComponent((location.hash || "").slice(1));
     loadDir(start);

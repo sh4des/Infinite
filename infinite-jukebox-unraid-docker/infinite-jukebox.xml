@@ -1,14 +1,14 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>localbox</Name>
+  <Name>infinite-jukebox</Name>
   <!--
     Repository: this is a CUSTOM image you build yourself (see README).
     Set this to wherever you pushed it, e.g.:
-      ghcr.io/YOURUSER/localbox:latest   (recommended)
-    or build it directly on the Unraid box and leave it as localbox:latest
+      ghcr.io/YOURUSER/infinite-jukebox:latest   (recommended)
+    or build it directly on the Unraid box and leave it as infinite-jukebox:latest
     (in that case use the Compose Manager plugin instead of a registry pull).
   -->
-  <Repository>localbox:latest</Repository>
+  <Repository>infinite-jukebox:latest</Repository>
   <Registry/>
   <Network>bridge</Network>
   <MyIP/>
@@ -34,7 +34,7 @@
   <DonateLink/>
   <Description>
     Infinite Jukebox for your local music library. Local analysis, no external
-    services. Point /music at your library (read-write, for the .localbox cache)
+    services. Point /music at your library (read-write, for the .infinite-jukebox cache)
     and /data at appdata (fallback cache).
   </Description>
 
@@ -43,16 +43,16 @@
           Type="Port" Display="always" Required="true" Mask="false">8239</Config>
 
   <Config Name="Music Library" Target="/music" Default="/mnt/user/music"
-          Mode="rw:shared" Description="Your music library. Mounted READ-WRITE because the analysis/fingerprint cache is stored inside it at .localbox (so it travels with the music). Only the .localbox folder is written."
+          Mode="rw:shared" Description="Your music library. Mounted READ-WRITE because the analysis/fingerprint cache is stored inside it at .infinite-jukebox (so it travels with the music). Only the .infinite-jukebox folder is written."
           Type="Path" Display="always" Required="true" Mask="false">/mnt/user/music</Config>
 
   <Config Name="Store cache in library" Target="CACHE_IN_LIBRARY" Default="1" Mode=""
-          Description="1 = keep analysis/transcodes inside the library at .localbox (needs the read-write mount above). 0 = keep them in the Cache/Data path below and treat the library as read-only."
+          Description="1 = keep analysis/transcodes inside the library at .infinite-jukebox (needs the read-write mount above). 0 = keep them in the Cache/Data path below and treat the library as read-only."
           Type="Variable" Display="always" Required="false" Mask="false">1</Config>
 
-  <Config Name="Cache / Data (fallback)" Target="/data" Default="/mnt/user/appdata/localbox"
+  <Config Name="Cache / Data (fallback)" Target="/data" Default="/mnt/user/appdata/infinite-jukebox"
           Mode="rw" Description="Used only when 'Store cache in library' is 0 (or the library is read-only)."
-          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/localbox</Config>
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/infinite-jukebox</Config>
 
   <Config Name="AcoustID Key" Target="ACOUSTID_KEY" Default="" Mode=""
           Description="Optional. Acoustic fingerprinting fallback for untagged files. Free key at https://acoustid.org/new-application"

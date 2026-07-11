@@ -3,4 +3,4 @@ __pycache__
 .git
 *.md
 docker-compose.yml
-localbox.xml
+infinite-jukebox.xml

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# deploy.sh — build & deploy localbox to an Unraid box over SSH, then verify.
+# deploy.sh — build & deploy infinite-jukebox to an Unraid box over SSH, then verify.
 #
 # What it does:
 #   1. Preflight: SSH reachable, docker present, music share exists.
 #   2. Ship this folder's source to the box (tar over SSH — no rsync needed).
 #   3. Build the image on the box.
 #   4. Recreate the container with the correct mounts (music read-write so the
-#      analysis/fingerprint cache can live inside the library at .localbox).
+#      analysis/fingerprint cache can live inside the library at .infinite-jukebox).
 #   5. Health-check: container running + /healthy responding + library readable.
 #
 # Usage (note: in zsh, don't paste a trailing "# comment" — zsh passes it as an
@@ -27,13 +27,15 @@ case "$ARG" in ''|'#'*) ARG="" ;; esac
 SSH_TARGET="${ARG:-${SSH_TARGET:-root@10.0.23.105}}"
 HOST="${SSH_TARGET#*@}"
 
-IMAGE="${IMAGE:-localbox:latest}"
-CONTAINER="${CONTAINER:-localbox}"
+IMAGE="${IMAGE:-infinite-jukebox:latest}"
+CONTAINER="${CONTAINER:-infinite-jukebox}"
 PORT="${PORT:-8239}"
+LOG_LEVEL="${LOG_LEVEL:-info}"
+ICON_URL="https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/267e.png"
 
 MUSIC_DIR="${MUSIC_DIR:-/mnt/user/music}"                    # library on the Unraid box
-DATA_DIR="${DATA_DIR:-/mnt/user/appdata/localbox}"           # analysis + transcode cache
-SRC_DIR="${SRC_DIR:-~/source/dale/Infinite/localbox}"        # where source is shipped & built
+DATA_DIR="${DATA_DIR:-/mnt/user/appdata/infinite-jukebox}"   # analysis + transcode cache
+SRC_DIR="${SRC_DIR:-~/source/dale/Infinite/infinite-jukebox}"        # where source is shipped & built
 
 # The path may use ~ ; expand it on the *remote* side (its $HOME), not locally.
 case "$SRC_DIR" in
@@ -48,7 +50,7 @@ FORCE_TRANSCODE="${FORCE_TRANSCODE:-}"
 # Connection multiplexing: authenticate ONCE (even with a passphrase-protected
 # key or password auth), then reuse the same connection for every remote call.
 # Note: no BatchMode — we *want* to allow a single interactive passphrase prompt.
-SSH_CTRL="/tmp/localbox-cm-%r-%h-%p"
+SSH_CTRL="/tmp/infinite-jukebox-cm-%r-%h-%p"
 SSH_OPTS="${SSH_OPTS:--o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=$SSH_CTRL -o ControlPersist=300}"
 
 # Where this script (and the source it deploys) lives.
@@ -109,25 +111,31 @@ ok "image built"
 # ----------------------------------------------------------------------------
 step "Recreating container $CONTAINER"
 # ----------------------------------------------------------------------------
-# CACHE_IN_LIBRARY=1 stores analysis/transcodes in <music>/.localbox, so the
+# CACHE_IN_LIBRARY=1 stores analysis/transcodes in <music>/.infinite-jukebox, so the
 # music share is mounted READ-WRITE. Set CACHE_IN_LIBRARY=0 to keep it in /data
 # and mount music read-only instead.
 CACHE_IN_LIBRARY="${CACHE_IN_LIBRARY:-1}"
 if [ "$CACHE_IN_LIBRARY" = "1" ]; then
   MUSIC_MOUNT="$MUSIC_DIR:/music:rw"
-  warn "cache stored inside the library (.localbox) — mounting $MUSIC_DIR read-WRITE"
+  warn "cache stored inside the library (.infinite-jukebox) — mounting $MUSIC_DIR read-WRITE"
 else
   MUSIC_MOUNT="$MUSIC_DIR:/music:ro"
 fi
 
+# The net.unraid.docker.* labels make Unraid show a clickable WebUI button and an
+# icon on the Docker page, even though this container is created via `docker run`
+# rather than an Unraid template. Unraid expands [IP] and [PORT:8080] itself.
 remote "docker rm -f '$CONTAINER' >/dev/null 2>&1 || true"
 remote "docker run -d \
   --name '$CONTAINER' \
   --restart unless-stopped \
   -p '${PORT}:8080' \
+  -l net.unraid.docker.webui='http://[IP]:[PORT:8080]/' \
+  -l net.unraid.docker.icon='$ICON_URL' \
   -e ACOUSTID_KEY='$ACOUSTID_KEY' \
   -e FORCE_TRANSCODE='$FORCE_TRANSCODE' \
   -e CACHE_IN_LIBRARY='$CACHE_IN_LIBRARY' \
+  -e LOG_LEVEL='$LOG_LEVEL' \
   -v '$MUSIC_MOUNT' \
   -v '$DATA_DIR:/data' \
   '$IMAGE'" >/dev/null || die "docker run failed"
@@ -153,17 +161,17 @@ printf '  %s…%s waiting for %s\n' "$DIM" "$NC" "$HEALTH_URL"
 HEALTHY=0
 for i in $(seq 1 30); do
   # Prefer checking from this machine; fall back to curl inside the box.
-  if command -v curl >/dev/null && curl -fsS --max-time 3 "$HEALTH_URL" >/tmp/localbox_health 2>/dev/null; then
+  if command -v curl >/dev/null && curl -fsS --max-time 3 "$HEALTH_URL" >/tmp/infinite-jukebox_health 2>/dev/null; then
     HEALTHY=1; break
   fi
-  if remote "curl -fsS --max-time 3 http://localhost:${PORT}/healthy" >/tmp/localbox_health 2>/dev/null; then
+  if remote "curl -fsS --max-time 3 http://localhost:${PORT}/healthy" >/tmp/infinite-jukebox_health 2>/dev/null; then
     HEALTHY=1; break
   fi
   sleep 2
 done
 
 if [ "$HEALTHY" = "1" ]; then
-  ok "health endpoint OK: $(cat /tmp/localbox_health)"
+  ok "health endpoint OK: $(cat /tmp/infinite-jukebox_health)"
 else
   warn "health endpoint did not respond in time — recent logs:"
   remote "docker logs --tail 40 '$CONTAINER'" || true
@@ -171,7 +179,7 @@ else
 fi
 
 # 3) library is actually readable through the app
-if remote "curl -fsS --max-time 5 'http://localhost:${PORT}/api/library'" >/tmp/localbox_lib 2>/dev/null; then
+if remote "curl -fsS --max-time 5 'http://localhost:${PORT}/api/library'" >/tmp/infinite-jukebox_lib 2>/dev/null; then
   FOLDERS=$(remote "curl -fsS 'http://localhost:${PORT}/api/library'" | tr ',' '\n' | grep -c '"name"' || true)
   ok "library API OK (top level lists ~${FOLDERS} entries)"
 else
@@ -182,7 +190,7 @@ fi
 HC="$(remote "docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' '$CONTAINER'" 2>/dev/null || echo none)"
 [ "$HC" != "none" ] && ok "docker healthcheck: $HC"
 
-printf '\n%s✓ localbox deployed and healthy%s\n' "$GREEN$BOLD" "$NC"
+printf '\n%s✓ infinite-jukebox deployed and healthy%s\n' "$GREEN$BOLD" "$NC"
 printf '  Web UI:  %shttp://%s:%s/%s\n' "$BOLD" "$HOST" "$PORT" "$NC"
 printf '  Logs:    ssh %s docker logs -f %s\n' "$SSH_TARGET" "$CONTAINER"
 printf '  Restart: ssh %s docker restart %s\n\n' "$SSH_TARGET" "$CONTAINER"

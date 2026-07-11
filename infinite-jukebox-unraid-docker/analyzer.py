@@ -293,8 +293,17 @@ def _sections(y, y_harm, sr, hop, duration, tempo, time_signature):
 
 
 if __name__ == "__main__":
+    # Invoked as an isolated worker: `python analyzer.py <file>`.
+    # Only JSON is written to stdout; errors go to stderr with a non-zero exit.
     import json
     import sys
+    import warnings
 
-    analysis, dur = analyze(sys.argv[1])
-    print(json.dumps({"analysis": analysis, "audio_summary": {"duration": dur}}))
+    warnings.filterwarnings("ignore")
+    try:
+        analysis, dur = analyze(sys.argv[1])
+        sys.stdout.write(json.dumps({"analysis": analysis, "audio_summary": {"duration": dur}}))
+        sys.stdout.flush()
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"{type(exc).__name__}: {exc}\n")
+        sys.exit(1)

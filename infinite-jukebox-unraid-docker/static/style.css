@@ -265,6 +265,8 @@ button.secondary:hover { border-color: var(--accent); color: var(--accent); }
 .tile-lbl { color: var(--dim); font-size: 13px; margin-top: 4px; }
 .statshead { font-size: 16px; margin: 22px 0 6px; color: var(--text); }
 .file .metric { color: var(--accent2); font-size: 13px; margin-left: 12px; white-space: nowrap; }
+a.file { text-decoration: none; color: inherit; }
+a.file .ico { color: var(--accent); }
 
 /* ---------- mobile / iPhone portrait ---------- */
 @media (max-width: 640px) {

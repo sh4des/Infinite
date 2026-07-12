@@ -48,13 +48,17 @@
       return `<div class="tile"><div class="tile-val">${value}</div><div class="tile-lbl">${label}</div></div>`;
     }
     function row(t, metric) {
-      return `<li class="file">
+      const href = "/player?id=" + encodeURIComponent(t.id) +
+        "&title=" + encodeURIComponent(t.title || "") +
+        "&artist=" + encodeURIComponent(t.artist || "");
+      return `<li><a class="file" href="${href}" title="Play ${esc(t.title)}">
+        <span class="ico">▶</span>
         <span class="meta">
           <span class="title">${esc(t.title)}</span>
           <span class="artist">${esc(t.artist || "")}</span>
         </span>
         <span class="metric">${metric}</span>
-      </li>`;
+      </a></li>`;
     }
 
     (async function () {
